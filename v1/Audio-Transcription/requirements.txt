@@ -8,3 +8,4 @@ openai
 requests
 python-multipart
 Jinja2
+pydub
