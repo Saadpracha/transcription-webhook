@@ -177,6 +177,11 @@ _transcriber: Optional[AudioTranscriberWithDiarization] = None  # type: ignore
 
 app = FastAPI(title="WhisperX + Diarization Transcription Service")
 
+@app.post("/")
+async def webhook_handler(payload: dict):
+    # optional: you can enqueue payload to your existing pipeline here
+    return {"status": "received"}
+
 # Templates and static (mounted lazily if directories exist)
 BASE_DIR = Path(__file__).parent.resolve()
 TEMPLATES_DIR = BASE_DIR / "templates"

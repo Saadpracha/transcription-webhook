@@ -183,7 +183,11 @@ def start_queue_processor():
 # Instantiate a reusable transcriber object (kept for full flow; unused in simple mode)
 _transcriber: Optional[AudioTranscriberWithDiarization] = None  # type: ignore
 
-app = FastAPI(title="WhisperX + Diarization Transcription Service V3")
+app = FastAPI(title="WhisperX + Diarization Transcription Service V2")
+@app.post("/")
+async def webhook_handler(payload: dict):
+    # optional: you can enqueue payload to your existing pipeline here
+    return {"status": "received"}
 
 # Templates and static (mounted lazily if directories exist)
 BASE_DIR = Path(__file__).parent.resolve()
