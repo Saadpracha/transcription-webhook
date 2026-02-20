@@ -175,7 +175,7 @@ def start_queue_processor():
 _transcriber: Optional[AudioTranscriberWithDiarization] = None  # type: ignore
 
 app = FastAPI(title="WhisperX + Diarization Transcription Service V3")
-@app.post("/")
+@app.post("/v3/")
 async def webhook_handler(payload: dict):
     # optional: you can enqueue payload to your existing pipeline here
     return {"status": "received"}
