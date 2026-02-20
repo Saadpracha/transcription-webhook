@@ -174,10 +174,10 @@ def start_queue_processor():
 # Instantiate a reusable transcriber object (kept for full flow; unused in simple mode)
 _transcriber: Optional[AudioTranscriberWithDiarization] = None  # type: ignore
 
-app = FastAPI(title="WhisperX + Diarization Transcription Service V3")
+app = FastAPI(title="WhisperX + Diarization Transcription Service V2")
 @app.post("/v3/")
-def webhook_v3(payload: dict):
-    return webhook3_listener(payload)
+def webhook_v2(payload: dict):
+    return webhook2_listener(payload)
 
 
 @app.get("/")
@@ -527,10 +527,9 @@ def build_gui_links(session_id: Optional[str], customer_slug: Optional[str] = No
         logger.warning("Error building GUI links: %s", e)
     return result
 
-def send_make_webhook_v3(job_data: dict, contact_id: Optional[str], call_id: Optional[str], webhook_url: Optional[str] = None, original_payload: Optional[dict] = None, job_id: Optional[str] = None) -> bool:
-    """Send the GUI link (and basic metadata) to a Make.com webhook for v3 endpoint.
+def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Optional[str], webhook_url: Optional[str] = None, original_payload: Optional[dict] = None, job_id: Optional[str] = None) -> bool:
+    """Send the GUI link (and basic metadata) to a Make.com webhook.
     
-    V3 changes:
     - Removes: date_time, company_name (top-level)
     - Includes: phoneCall.* and contact.* fields if present
     """
@@ -543,8 +542,8 @@ def send_make_webhook_v3(job_data: dict, contact_id: Optional[str], call_id: Opt
 
         # Use entity_id for GUI link (with timestamp) to match S3 folder structure
         session_id = job_data.get("entity_id") or contact_id or call_id
-        logger.info("Webhook v3 - job_data entity_id: %s", job_data.get("entity_id"))
-        logger.info("Webhook v3 - session_id for GUI: %s", session_id)
+        logger.info("Webhook - job_data entity_id: %s", job_data.get("entity_id"))
+        logger.info("Webhook - session_id for GUI: %s", session_id)
         customer_slug = resolve_customer_slug_from_payload(original_payload or {})
         
         # Build both domain and IP GUI links
@@ -580,9 +579,10 @@ def send_make_webhook_v3(job_data: dict, contact_id: Optional[str], call_id: Opt
             "created_at": int(time.time()),
             "job_id": job_id,
             "audio_length": job_data.get("audio_length"),  # formatted mm:ss string
+            "audio_duration_seconds": job_data.get("audio_duration_seconds"),  # raw seconds (when available)
         })
 
-        # V3: Explicitly include phoneCall and contact objects if present
+        # Explicitly include phoneCall and contact objects if present
         phone_call = original_payload.get("phoneCall") if isinstance(original_payload.get("phoneCall"), dict) else None
         contact = original_payload.get("contact") if isinstance(original_payload.get("contact"), dict) else None
         if isinstance(phone_call, dict):
@@ -612,8 +612,8 @@ def send_make_webhook_v3(job_data: dict, contact_id: Optional[str], call_id: Opt
         }
         payload["files"] = {k: v for k, v in file_fields.items() if v}
 
-        logger.info("Posting GUI link to outbound webhook (v3): %s", url)
-        logger.info("Final webhook selected fields (v3): %s", {
+        logger.info("Posting GUI link to outbound webhook: %s", url)
+        logger.info("Final webhook selected fields: %s", {
             "googlesheet": payload.get("googlesheet"),
             "googlesheet_id": payload.get("googlesheet_id"),
             "contact_id": payload.get("contact_id"),
@@ -625,10 +625,10 @@ def send_make_webhook_v3(job_data: dict, contact_id: Optional[str], call_id: Opt
         if not resp.ok:
             logger.warning("Outbound webhook post failed: %s %s", resp.status_code, resp.text)
             return False
-        logger.info("Outbound webhook post succeeded (v3)")
+        logger.info("Outbound webhook post succeeded")
         return True
     except Exception as e:
-        logger.warning("Failed to send Make.com webhook (v3): %s", e)
+        logger.warning("Failed to send Make.com webhook: %s", e)
         return False
 
 def _public_s3_base_url() -> Optional[str]:
@@ -1118,24 +1118,68 @@ def process_job(job_id: str, payload: dict):
         except Exception:
             pass
 
-        # If transcription is disabled, just send webhook with metadata and finish
+        # If transcription is disabled: download audio, save to S3, send webhook with audio link + duration
         if not transcribe:
+            audio_url = payload.get("audio")
+            if not audio_url:
+                raise ValueError("payload must include 'audio' url to save and return audio link (transcribe=false)")
+
+            jobs[job_id]["status"] = "downloading"
+            readable_name = derive_readable_audio_name(audio_url, f"{entity_id}_{uuid.uuid4().hex[:8]}.wav")
+            temp_download_name = f"{entity_id}_{uuid.uuid4().hex[:8]}"
+            local_path = AUDIO_TMP_DIR / temp_download_name
+            audio_auth = None
+            if isinstance(payload.get("audio_auth"), dict):
+                aa = payload.get("audio_auth")
+                audio_auth = (aa.get("username"), aa.get("password"))
+            headers = payload.get("audio_headers")
+            local_path = download_audio(audio_url, local_path, auth=audio_auth, headers=headers)
+
+            # Probe audio duration
+            try:
+                audio_length_sec = probe_audio_duration_seconds(local_path)
+                if audio_length_sec is not None:
+                    jobs[job_id]["audio_length"] = format_seconds_mmss(audio_length_sec)
+                    jobs[job_id]["audio_duration_seconds"] = round(audio_length_sec, 2)
+                    logger.info("Probed audio duration: %s", jobs[job_id]["audio_length"])
+            except Exception as dur_ex:
+                logger.warning("Failed to probe audio duration: %s", dur_ex)
+
+            # Upload audio to S3 (as-is, no transcription)
+            jobs[job_id]["status"] = "uploading_to_s3"
+            customer_slug = jobs[job_id].get("customer_slug")
+            if customer_slug:
+                s3_base_key = f"audio/{customer_slug}/{entity_id}/"
+            else:
+                s3_base_key = f"audio/{entity_id}/"
+            audio_s3_key = f"{s3_base_key}{readable_name}"
+            audio_s3_url = upload_to_s3(local_path, audio_s3_key)
+            jobs[job_id]["audio_s3_url"] = audio_s3_url
+            jobs[job_id]["audio_s3_key"] = audio_s3_key
+            jobs[job_id]["s3_base_key"] = s3_base_key
+
+            # Clean up temp file
+            try:
+                if local_path and local_path.exists():
+                    local_path.unlink(missing_ok=True)
+            except Exception as cleanup_ex:
+                logger.warning("Failed to remove temp audio: %s", cleanup_ex)
+
             jobs[job_id]["status"] = "done"
             jobs[job_id]["finished_at"] = time.time()
 
-            # Send output to Make webhook URL from input payload (customData.make_url_out)
+            # Send webhook with audio link and duration
             try:
                 out_url = (payload.get("make_url_out") or "").strip()
                 if out_url:
-                    logger.info("Sending webhook (no transcription) to URL: %s", out_url)
-                    logger.info("Job data entity_id: %s", jobs[job_id].get("entity_id"))
-                    send_make_webhook_v3(jobs[job_id], contact_id, call_id, out_url, original_payload=payload, job_id=job_id)
+                    logger.info("Sending webhook (no transcription, with audio link + duration) to URL: %s", out_url)
+                    send_make_webhook(jobs[job_id], contact_id, call_id, out_url, original_payload=payload, job_id=job_id)
                 else:
                     logger.info("No make_url_out in payload; skipping output webhook (no transcription)")
             except Exception as make_ex:
                 logger.warning("Unexpected error while posting to Make.com webhook (no transcription): %s", make_ex)
 
-            logger.info("Job %s completed without transcription (transcribe=false)", job_id)
+            logger.info("Job %s completed without transcription (transcribe=false): audio saved to S3", job_id)
             return
 
         # From here on, transcription is enabled
@@ -1334,7 +1378,7 @@ def process_job(job_id: str, payload: dict):
             if out_url:
                 logger.info("Sending webhook to URL: %s", out_url)
                 logger.info("Job data entity_id: %s", jobs[job_id].get("entity_id"))
-                send_make_webhook_v3(jobs[job_id], contact_id, call_id, out_url, original_payload=payload, job_id=job_id)
+                send_make_webhook(jobs[job_id], contact_id, call_id, out_url, original_payload=payload, job_id=job_id)
             else:
                 logger.info("No make_url_out in payload; skipping output webhook")
         except Exception as make_ex:
@@ -1379,10 +1423,9 @@ def process_job(job_id: str, payload: dict):
 
 
 @app.post("/webhook3")
-def webhook3_listener(payload: dict):
-    """Receives webhook v3 (from Make or direct CRM). Payload must contain `audio` url.
+def webhook2_listener(payload: dict):
+    """Receives webhook (from Make or direct CRM). Payload must contain `audio` url.
     
-    V3 Changes:
     - Removed variables: date_time, company_name (top-level)
     - Variable names from customData: token, slug, googlesheet, audio
     - Supports: phoneCall.* (direction, duration, from, to, user.name, startTime, endTime, callStatus, dispositions)
@@ -1398,21 +1441,8 @@ def webhook3_listener(payload: dict):
         "googlesheet": "sheet_id"
       },
       "contact_id": "abc123",
-      "phoneCall": {
-        "direction": "inbound",
-        "duration": 300,
-        "from": "+1234567890",
-        "to": "+0987654321",
-        "user": {"name": "John Doe"},
-        "startTime": "2026-01-14T10:00:00Z",
-        "endTime": "2026-01-14T10:05:00Z",
-        "callStatus": "completed",
-        "dispositions": []
-      },
-      "contact": {
-        "website": "https://example.com",
-        "company_name": "Example Corp"
-      },
+      "phoneCall": { ... },
+      "contact": { ... },
       "show_prompt": true,
       "language": "en"
     }
@@ -1424,13 +1454,13 @@ def webhook3_listener(payload: dict):
       "contact_id": "abc123",
       "status": "queued",
       "queue_position": 1,
-      "webhook_version": "v3"
+      "webhook_version": "v2"
     }
     """
-    logger.info("Inbound v3 payload keys: %s", list(payload.keys()))
+    logger.info("Inbound payload keys: %s", list(payload.keys()))
     job_id = str(uuid.uuid4())
 
-    # V3: Pull from customData (token, slug, googlesheet, audio, transcribe, make_url_out are "custom")
+    # Pull from customData (token, slug, googlesheet, audio, transcribe, make_url_out are "custom")
     try:
         custom = payload.get("customData") if isinstance(payload, dict) else None
         if isinstance(custom, dict):
@@ -1445,7 +1475,7 @@ def webhook3_listener(payload: dict):
     except Exception:
         pass
 
-    # V3: Derive caller_name from phoneCall.user.name if missing
+    # Derive caller_name from phoneCall.user.name if missing
     try:
         phone_call = payload.get("phoneCall") if isinstance(payload, dict) else None
         if isinstance(phone_call, dict):
@@ -1490,7 +1520,7 @@ def webhook3_listener(payload: dict):
         "contact_id": contact_id,
         "call_id": call_id,
         "queue_position": 0,
-        "webhook_version": "v3"
+        "webhook_version": "v2"
     }
     
     # Add to queue
@@ -1507,7 +1537,7 @@ def webhook3_listener(payload: dict):
         "call_id": call_id,
         "status": "queued",
         "queue_position": current_position,
-        "webhook_version": "v3"
+        "webhook_version": "v2"
     }
 
 
