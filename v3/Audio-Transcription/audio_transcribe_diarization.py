@@ -8,6 +8,13 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, List
 
+try:
+    import torch
+    from omegaconf import DictConfig, ListConfig
+    torch.serialization.add_safe_globals([DictConfig, ListConfig])
+except Exception:
+    pass
+
 import whisperx
 import torch
 import psutil
