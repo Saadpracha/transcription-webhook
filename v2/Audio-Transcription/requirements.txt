@@ -1,0 +1,11 @@
+git+https://github.com/m-bain/whisperX.git
+python-dotenv
+psutil
+fastapi
+uvicorn[standard]
+boto3
+openai
+requests
+python-multipart
+Jinja2
+pydub

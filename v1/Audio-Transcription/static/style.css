@@ -1,0 +1,22 @@
+:root{--fg:#1f2937;--muted:#6b7280;--bg:#f8fafc;--card:#ffffff;--accent:#2563eb}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif}
+.container{max-width:900px;margin:0 auto;padding:24px}
+header{margin-bottom:16px}
+h1{margin:0 0 2px 0;font-size:24px}
+.sid{color:var(--muted);font-size:14px;margin-bottom:8px}
+.subtitle{margin:0;color:var(--muted)}
+section{background:var(--card);border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:16px 0}
+h2{margin:0 0 12px 0;font-size:18px}
+.muted{color:var(--muted)}
+.json-block{background:#0b1020;color:#e5e7eb;padding:12px;border-radius:6px;overflow:auto}
+.transcript{display:flex;flex-direction:column;gap:8px}
+.seg{display:flex;gap:8px;line-height:1.5}
+.time{color:#10b981;font-family:ui-monospace,Consolas,monospace}
+.speaker{font-weight:600}
+.checklist{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
+.checklist li{display:flex;gap:8px;align-items:center}
+.checklist .item{font-weight:500}
+.checklist .meta{color:var(--muted);margin-left:8px}
+footer{margin-top:24px;text-align:center;color:var(--muted)}
+

@@ -1,0 +1,12 @@
+# venvs (must not be committed)
+**/venv/
+
+# env files (usually not committed)
+**/.env
+
+# python cache
+**/__pycache__/
+**/*.pyc
+
+# logs
+logs/
