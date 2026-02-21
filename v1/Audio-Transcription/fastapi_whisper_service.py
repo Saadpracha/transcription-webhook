@@ -31,8 +31,9 @@ from pydub import AudioSegment
 import boto3
 import openai
 
-# load .env
+# load .env (from cwd and from script directory so it works under systemd)
 load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # Basic logging
 logging.basicConfig(level=logging.INFO)
@@ -1238,9 +1239,15 @@ def process_job(job_id: str, payload: dict):
         if payload.get("no_diarization"):
             cmd.append("--no-diarization")
         logger.info("Running transcriber: %s", " ".join(cmd))
+        # Ensure token is loaded from app dir (e.g. when run under systemd) and passed to subprocess
+        load_dotenv(Path(__file__).resolve().parent / ".env")
+        token_for_subprocess = os.getenv("HUGGINGFACE_TOKEN") or HUGGINGFACE_TOKEN
         subprocess_env = os.environ.copy()
-        if HUGGINGFACE_TOKEN:
-            subprocess_env["HUGGINGFACE_TOKEN"] = HUGGINGFACE_TOKEN
+        if token_for_subprocess:
+            subprocess_env["HUGGINGFACE_TOKEN"] = token_for_subprocess
+            logger.info("HUGGINGFACE_TOKEN set for diarization subprocess")
+        else:
+            logger.warning("HUGGINGFACE_TOKEN not set; diarization may fail with 403 if model terms not accepted")
         subprocess.run(cmd, check=True, cwd=str(Path(__file__).parent), env=subprocess_env)
 
         # Summarize using ai_summary.process_transcript if available

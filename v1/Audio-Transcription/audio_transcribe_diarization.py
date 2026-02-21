@@ -20,6 +20,9 @@ import torch
 import psutil
 from dotenv import load_dotenv
 from pyannote.audio import Pipeline
+
+# Load .env from script directory so token is available when run as subprocess (e.g. under systemd)
+load_dotenv(Path(__file__).resolve().parent / ".env")
 from pyannote.audio.pipelines.utils.hook import ProgressHook
 
 
@@ -33,7 +36,6 @@ class AudioTranscriberWithDiarization:
         self.diarization_pipeline = None
 
         torch.set_num_threads(num_threads)
-        load_dotenv()
 
     def load_models(self):
         if self.model is None:
