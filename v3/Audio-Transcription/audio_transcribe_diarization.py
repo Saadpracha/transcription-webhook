@@ -53,7 +53,7 @@ class AudioTranscriberWithDiarization:
             try:
                 self.diarization_pipeline = Pipeline.from_pretrained(
                     "pyannote/speaker-diarization-3.1",
-                    token=token
+                    use_auth_token=token
                 )
                 print("[INFO] Diarization model loaded.")
             except Exception as e:

@@ -16,3 +16,10 @@ python-multipart==0.0.22
 Jinja2==3.1.6
 pydub==0.25.1
 openai==2.16.0
+
+torch==2.5.1+cpu
+torchaudio==2.5.1+cpu
+torchvision==0.20.1+cpu 
+--index-url https://download.pytorch.org/whl/cpu
+
+pytorch-lightning==2.4.0
