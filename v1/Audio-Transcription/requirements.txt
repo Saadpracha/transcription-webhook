@@ -1,7 +1,5 @@
 whisperx @ git+https://github.com/m-bain/whisperX.git@6ec4a020489d904c4f2cd1ed097674232d2692d4
 
-torch==2.8.0
-torchaudio==2.8.0
 transformers==4.57.6
 faster-whisper==1.2.1
 ctranslate2==4.7.1
