@@ -1254,7 +1254,10 @@ def process_job(job_id: str, payload: dict):
         if payload.get("no_diarization"):
             cmd.append("--no-diarization")
         logger.info("Running transcriber: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True, cwd=str(Path(__file__).parent))
+        subprocess_env = os.environ.copy()
+        if HUGGINGFACE_TOKEN:
+            subprocess_env["HUGGINGFACE_TOKEN"] = HUGGINGFACE_TOKEN
+        subprocess.run(cmd, check=True, cwd=str(Path(__file__).parent), env=subprocess_env)
 
         # Summarize using ai_summary.process_transcript if available
         summary_path = None
