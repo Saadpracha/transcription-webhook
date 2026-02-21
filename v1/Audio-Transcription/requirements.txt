@@ -4,11 +4,8 @@ torchaudio==2.2.2+cpu
 torchvision==0.17.2+cpu
 numpy==1.26.4
 
-# Stable whisperX release (NOT git)
 whisperx==3.1.1
-
-# Compatible pyannote
-pyannote-audio==2.1.1
+pyannote-audio==3.1.1
 
 # ---- API ----
 fastapi==0.110.0
