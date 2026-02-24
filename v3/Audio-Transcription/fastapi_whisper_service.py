@@ -620,6 +620,11 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "has_phoneCall": "phoneCall" in system,
             "has_contact": "contact" in system,
         })
+        # Log full outbound body (payload + system)
+        try:
+            logger.info("Outbound webhook body (payload + system): %s", json.dumps(final_body, ensure_ascii=False, default=str))
+        except Exception as _log_ex:
+            logger.warning("Failed to serialize outbound webhook body for logging: %s", _log_ex)
         resp = requests.post(url, json=final_body, timeout=20)
         if not resp.ok:
             logger.warning("Outbound webhook post failed: %s %s", resp.status_code, resp.text)
@@ -1462,6 +1467,11 @@ def webhook2_listener(payload: dict):
     logger.info("Inbound payload keys: %s", list(payload.keys()))
     # Capture the original payload exactly as received so we can echo it back unchanged
     original_payload = payload.copy() if isinstance(payload, dict) else payload
+    # Log full inbound payload for debugging/traceability
+    try:
+        logger.info("Inbound raw payload body: %s", json.dumps(original_payload, ensure_ascii=False, default=str))
+    except Exception as _log_ex:
+        logger.warning("Failed to serialize inbound payload for logging: %s", _log_ex)
     job_id = str(uuid.uuid4())
 
     # Pull from customData (token, slug, googlesheet, audio, transcribe, make_url_out are "custom")
@@ -1545,10 +1555,16 @@ def webhook2_listener(payload: dict):
         "queue_position": current_position,
         "webhook_version": "v2",
     }
-    return {
+    response_body = {
         "payload": original_payload if isinstance(original_payload, dict) else payload,
         "system": system,
     }
+    # Log FastAPI response body for the webhook
+    try:
+        logger.info("Webhook3 FastAPI response body: %s", json.dumps(response_body, ensure_ascii=False, default=str))
+    except Exception as _log_ex:
+        logger.warning("Failed to serialize webhook3 response body for logging: %s", _log_ex)
+    return response_body
 
 
 @app.get("/jobs/{job_id}")
