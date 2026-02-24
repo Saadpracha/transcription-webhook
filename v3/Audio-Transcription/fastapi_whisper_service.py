@@ -182,7 +182,7 @@ def webhook_v2(payload: dict):
 
 @app.get("/")
 async def root():
-    return {"status": "ok"}
+    return {"payload": {}, "system": {"status": "ok"}}
 # Templates and static (mounted lazily if directories exist)
 BASE_DIR = Path(__file__).parent.resolve()
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -555,49 +555,33 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             logger.warning("Could not build GUI links for Make.com webhook; missing session_id or base URLs")
             return False
 
-        # Start with original payload (what Make.com sent us) to echo data back
-        payload: Dict[str, Any] = dict(original_payload or {})
+        # Preserve the original incoming payload exactly as received
+        safe_original_payload: Dict[str, Any] = {}
+        if isinstance(original_payload, dict):
+            safe_original_payload = original_payload
 
-        # Ensure key custom fields are surfaced at top level even if only present in customData
-        try:
-            custom = original_payload.get("customData") if isinstance(original_payload, dict) else None
-        except Exception:
-            custom = None
-        if isinstance(custom, dict):
-            for field in ("audio", "token", "slug", "googlesheet", "transcribe", "make_url_out"):
-                if field not in payload and custom.get(field) is not None:
-                    payload[field] = custom.get(field)
-
-        # Add/override our fields
-        payload.update({
+        # Build system block with all Python/service‑generated variables
+        system: Dict[str, Any] = {
             "session_id": session_id,
-            "entity_id": job_data.get("entity_id"),  # unique per call
+            "entity_id": job_data.get("entity_id"),
             "contact_id": contact_id,
             "call_id": call_id,
-            "gui_link": gui_link,  # Domain link (files.lead2424.com)
-            "gui_link_ip": gui_link_ip,  # IP address link (16.52.197.95:8088)
+            "gui_link": gui_link,
+            "gui_link_ip": gui_link_ip,
             "created_at": int(time.time()),
             "job_id": job_id,
-            "audio_length": job_data.get("audio_length"),  # formatted mm:ss string
-            "audio_duration_seconds": job_data.get("audio_duration_seconds"),  # raw seconds (when available)
-        })
+            "audio_length": job_data.get("audio_length"),
+            "audio_duration_seconds": job_data.get("audio_duration_seconds"),
+        }
 
-        # Explicitly include phoneCall and contact objects if present
-        phone_call = original_payload.get("phoneCall") if isinstance(original_payload.get("phoneCall"), dict) else None
-        contact = original_payload.get("contact") if isinstance(original_payload.get("contact"), dict) else None
-        if isinstance(phone_call, dict):
-            payload["phoneCall"] = phone_call
-        if isinstance(contact, dict):
-            payload["contact"] = contact
-
-        # Normalize/echo Google Sheet identifier to help downstream mapping
+        # Normalize/echo Google Sheet identifier into system to help downstream mapping
         try:
-            sheet_id = (original_payload or {}).get("googlesheet")
+            sheet_id = (original_payload or {}).get("googlesheet") if isinstance(original_payload, dict) else None
             logger.info("Google Sheet ID from original payload: %s", sheet_id)
             if sheet_id:
-                payload["googlesheet"] = sheet_id
-                payload["googlesheet_id"] = sheet_id  # convenience alias
-                logger.info("Set googlesheet and googlesheet_id to: %s", sheet_id)
+                system["googlesheet"] = sheet_id
+                system["googlesheet_id"] = sheet_id  # convenience alias
+                logger.info("Set system.googlesheet and system.googlesheet_id to: %s", sheet_id)
             else:
                 logger.warning("No googlesheet ID found in original payload")
         except Exception as e:
@@ -610,18 +594,33 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             "summary_url": job_data.get("summary_s3_url"),
             "prompt_url": job_data.get("prompt_s3_url"),
         }
-        payload["files"] = {k: v for k, v in file_fields.items() if v}
+        system["files"] = {k: v for k, v in file_fields.items() if v}
+
+        # Explicitly include phoneCall and contact objects inside system (payload keeps originals untouched)
+        if isinstance(original_payload, dict):
+            phone_call = original_payload.get("phoneCall") if isinstance(original_payload.get("phoneCall"), dict) else None
+            contact = original_payload.get("contact") if isinstance(original_payload.get("contact"), dict) else None
+            if isinstance(phone_call, dict):
+                system["phoneCall"] = phone_call
+            if isinstance(contact, dict):
+                system["contact"] = contact
+
+        # Final outbound body: strict separation of payload vs system
+        final_body = {
+            "payload": safe_original_payload,
+            "system": system,
+        }
 
         logger.info("Posting GUI link to outbound webhook: %s", url)
         logger.info("Final webhook selected fields: %s", {
-            "googlesheet": payload.get("googlesheet"),
-            "googlesheet_id": payload.get("googlesheet_id"),
-            "contact_id": payload.get("contact_id"),
-            "audio_length": payload.get("audio_length"),
-            "has_phoneCall": "phoneCall" in payload,
-            "has_contact": "contact" in payload,
+            "googlesheet": system.get("googlesheet"),
+            "googlesheet_id": system.get("googlesheet_id"),
+            "contact_id": system.get("contact_id") or contact_id,
+            "audio_length": system.get("audio_length"),
+            "has_phoneCall": "phoneCall" in system,
+            "has_contact": "contact" in system,
         })
-        resp = requests.post(url, json=payload, timeout=20)
+        resp = requests.post(url, json=final_body, timeout=20)
         if not resp.ok:
             logger.warning("Outbound webhook post failed: %s %s", resp.status_code, resp.text)
             return False
@@ -1461,6 +1460,8 @@ def webhook2_listener(payload: dict):
     }
     """
     logger.info("Inbound payload keys: %s", list(payload.keys()))
+    # Capture the original payload exactly as received so we can echo it back unchanged
+    original_payload = payload.copy() if isinstance(payload, dict) else payload
     job_id = str(uuid.uuid4())
 
     # Pull from customData (token, slug, googlesheet, audio, transcribe, make_url_out are "custom")
@@ -1517,13 +1518,14 @@ def webhook2_listener(payload: dict):
     
     # Initialize job status
     jobs[job_id] = {
-        "status": "queued", 
-        "created_at": time.time(), 
+        "status": "queued",
+        "created_at": time.time(),
         "entity_id": entity_id,  # unique per call
         "contact_id": contact_id,
         "call_id": call_id,
         "queue_position": 0,
-        "webhook_version": "v2"
+        "webhook_version": "v2",
+        "original_payload": original_payload,
     }
     
     # Add to queue
@@ -1532,15 +1534,20 @@ def webhook2_listener(payload: dict):
     # Get current queue position
     current_position = jobs[job_id].get("queue_position", 0)
 
-    return {
-        "job_id": job_id, 
+    # FastAPI response: keep incoming payload under `payload`, job metadata under `system`
+    system = {
+        "job_id": job_id,
         "status_url": f"/jobs/{job_id}",
-        "entity_id": entity_id,  # unique per call
+        "entity_id": entity_id,
         "contact_id": contact_id,
         "call_id": call_id,
         "status": "queued",
         "queue_position": current_position,
-        "webhook_version": "v2"
+        "webhook_version": "v2",
+    }
+    return {
+        "payload": original_payload if isinstance(original_payload, dict) else payload,
+        "system": system,
     }
 
 
@@ -1586,7 +1593,7 @@ def get_job(job_id: str):
     
     # If job is completed, structure the response with all S3 links
     if job.get("status") == "done":
-        response = {
+        system = {
             "job_id": job_id,
             "contact_id": job.get("contact_id"),
             "call_id": job.get("call_id"),
@@ -1599,7 +1606,7 @@ def get_job(job_id: str):
         
         # Add audio file info
         if job.get("audio_s3_url"):
-            response["files"]["audio"] = {
+            system["files"]["audio"] = {
                 "url": job.get("audio_s3_url"),
                 "key": job.get("audio_s3_key"),
                 "filename": job.get("audio_s3_key", "").split("/")[-1] if job.get("audio_s3_key") else None
@@ -1607,7 +1614,7 @@ def get_job(job_id: str):
         
         # Add transcription file info
         if job.get("transcript_s3_url"):
-            response["files"]["transcription"] = {
+            system["files"]["transcription"] = {
                 "url": job.get("transcript_s3_url"),
                 "key": job.get("transcript_s3_key"),
                 "filename": job.get("transcript_s3_key", "").split("/")[-1] if job.get("transcript_s3_key") else None
@@ -1615,7 +1622,7 @@ def get_job(job_id: str):
         
         # Add summary file info (if exists)
         if job.get("summary_s3_url"):
-            response["files"]["summary"] = {
+            system["files"]["summary"] = {
                 "url": job.get("summary_s3_url"),
                 "key": job.get("summary_s3_key"),
                 "filename": job.get("summary_s3_key", "").split("/")[-1] if job.get("summary_s3_key") else None
@@ -1623,7 +1630,7 @@ def get_job(job_id: str):
         
         # Add call-to-action file info (if exists)
         if job.get("call_to_action_s3_url"):
-            response["files"]["call_to_action"] = {
+            system["files"]["call_to_action"] = {
                 "url": job.get("call_to_action_s3_url"),
                 "key": job.get("call_to_action_s3_key"),
                 "filename": job.get("call_to_action_s3_key", "").split("/")[-1] if job.get("call_to_action_s3_key") else None
@@ -1631,44 +1638,45 @@ def get_job(job_id: str):
         
         # Add prompt file info (if exists)
         if job.get("prompt_s3_url"):
-            response["files"]["prompt"] = {
+            system["files"]["prompt"] = {
                 "url": job.get("prompt_s3_url"),
                 "key": job.get("prompt_s3_key"),
                 "filename": job.get("prompt_s3_key", "").split("/")[-1] if job.get("prompt_s3_key") else None
             }
         
-        return response
+        return {"payload": {}, "system": system}
     
     # For non-completed jobs, return the basic job info with queue status
-    response = dict(job)
+    system = dict(job)
     
     # Add queue information
     with queue_lock:
-        response["is_processing"] = is_processing
-        response["queue_length"] = len(job_queue)
+        system["is_processing"] = is_processing
+        system["queue_length"] = len(job_queue)
         if "queue_position" in job:
-            response["queue_position"] = job["queue_position"]
+            system["queue_position"] = job["queue_position"]
     
-    return response
+    return {"payload": {}, "system": system}
 
 
 @app.get("/queue/status")
 def get_queue_status():
     """Get current queue status and statistics."""
     with queue_lock:
-        return {
+        system = {
             "is_processing": is_processing,
             "queue_length": len(job_queue),
             "total_jobs": len(jobs),
             "completed_jobs": len([j for j in jobs.values() if j.get("status") == "done"]),
             "failed_jobs": len([j for j in jobs.values() if j.get("status") == "error"]),
-            "queued_jobs": len([j for j in jobs.values() if j.get("status") == "queued"])
+            "queued_jobs": len([j for j in jobs.values() if j.get("status") == "queued"]),
         }
+        return {"payload": {}, "system": system}
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "models_preloaded": PRELOAD_MODELS}
+    return {"payload": {}, "system": {"status": "ok", "models_preloaded": PRELOAD_MODELS}}
 
 
 if __name__ == "__main__":
