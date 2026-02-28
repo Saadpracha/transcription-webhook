@@ -17,7 +17,7 @@ except Exception:
     ai_summary = None  # type: ignore
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from datetime import datetime, timezone
@@ -26,6 +26,7 @@ import requests
 from dotenv import load_dotenv
 import re
 from pydub import AudioSegment
+from botocore.exceptions import ClientError
 
 # Optional parts
 import boto3
@@ -588,8 +589,10 @@ def send_make_webhook(job_data: dict, contact_id: Optional[str], call_id: Option
             logger.warning("Error processing googlesheet ID: %s", e)
 
         # Include file URLs if available to help downstream automations
+        audio_key = job_data.get("audio_s3_key")
+        audio_url = build_audio_proxy_url_from_key(audio_key) if audio_key else None
         file_fields = {
-            "audio_url": job_data.get("audio_s3_url"),
+            "audio_url": audio_url,
             "transcript_url": job_data.get("transcript_s3_url"),
             "summary_url": job_data.get("summary_s3_url"),
             "prompt_url": job_data.get("prompt_s3_url"),
@@ -647,6 +650,27 @@ def _public_s3_base_url() -> Optional[str]:
         return None
     region = AWS_REGION or 'us-east-1'
     return f"https://{S3_BUCKET}.s3.amazonaws.com" if region == 'us-east-1' else f"https://{S3_BUCKET}.s3.{region}.amazonaws.com"
+
+
+def build_audio_proxy_url_from_key(key: str, use_ip: bool = False) -> Optional[str]:
+    """Build a stable audio playback URL under our own domain or IP.
+
+    Example:
+      key = "audio/customer_slug/entity_id/file.wav"
+      -> https://files.lead2424.com/audio/customer_slug/entity_id/file.wav
+    """
+    try:
+        if not key:
+            return None
+        base = IP_APP_BASE_URL if use_ip else PUBLIC_APP_BASE_URL
+        base = (base or "").strip()
+        if not base:
+            return None
+        # Ensure exactly one '/' between base and key
+        return f"{base.rstrip('/')}/{key.lstrip('/')}"
+    except Exception as e:
+        logger.warning("Failed to build audio proxy URL from key=%s: %s", key, e)
+        return None
 
 def build_public_s3_url(session_id: str, filename: str, customer_slug: Optional[str] = None) -> Optional[str]:
     base = _public_s3_base_url()
@@ -735,6 +759,89 @@ def fetch_json(url: str) -> Optional[dict]:
         logger.warning("Failed to fetch JSON from %s: %s", url, e)
     return None
 
+
+@app.get("/audio/{audio_path:path}")
+def stream_audio(audio_path: str, request: Request):
+    """Stream audio from S3 via a stable /audio/... endpoint.
+
+    - Reads from S3 key: audio/{audio_path}
+    - Forwards Range header to S3 if present
+    - Returns 206 Partial Content when Range exists
+    - Sets no-cache headers
+    """
+    if not S3_BUCKET:
+        raise HTTPException(status_code=500, detail="S3_BUCKET is not configured")
+
+    # Normalize S3 key to always start with 'audio/'
+    key = audio_path.lstrip("/")
+    if not key.startswith("audio/"):
+        key = f"audio/{key}"
+
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    get_kwargs: Dict[str, Any] = {"Bucket": S3_BUCKET, "Key": key}
+    if range_header:
+        get_kwargs["Range"] = range_header
+
+    logger.info("Streaming audio request for key=%s, range=%s", key, range_header)
+
+    try:
+        s3 = get_s3_client()
+        obj = s3.get_object(**get_kwargs)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404"):
+            logger.warning("Requested audio key not found in S3: %s", key)
+            raise HTTPException(status_code=404, detail="Audio file not found")
+        logger.exception("Error fetching audio from S3 for key=%s: %s", key, e)
+        raise HTTPException(status_code=502, detail="Error fetching audio from storage")
+    except Exception as e:
+        logger.exception("Unexpected error fetching audio from S3 for key=%s: %s", key, e)
+        raise HTTPException(status_code=502, detail="Error fetching audio from storage")
+
+    body = obj["Body"]
+
+    def iter_chunks():
+        try:
+            while True:
+                chunk = body.read(8192)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                body.close()
+            except Exception:
+                pass
+
+    status_code = 206 if range_header else 200
+    headers = {
+        "Accept-Ranges": "bytes",
+        # No-cache headers for security
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+
+    content_type = obj.get("ContentType") or "audio/mpeg"
+    if "ContentRange" in obj:
+        headers["Content-Range"] = obj["ContentRange"]
+    if "ContentLength" in obj:
+        headers["Content-Length"] = str(obj["ContentLength"])
+
+    logger.info(
+        "Starting audio stream for key=%s, status=%s, content_type=%s",
+        key,
+        status_code,
+        content_type,
+    )
+
+    return StreamingResponse(
+        iter_chunks(),
+        media_type=content_type,
+        status_code=status_code,
+        headers=headers,
+    )
+
 @app.get("/view-session/{session_id}", response_class=HTMLResponse)
 def view_session(request: Request, session_id: str):
     """Render a simple Jinja2 dashboard for a session/contact id.
@@ -774,9 +881,9 @@ def view_session(request: Request, session_id: str):
         if url:
             data[key] = fetch_json(url)
 
-    # Audio url if found
+    # Audio url if found - serve via proxy endpoint under our own domain
     if latest_keys.get("audio"):
-        urls["audio"] = build_public_s3_url_from_key(latest_keys["audio"]) 
+        urls["audio"] = build_audio_proxy_url_from_key(latest_keys["audio"])
 
     # Extract call to action data from summary file
     if data.get("summary") and isinstance(data["summary"], dict):
@@ -842,9 +949,9 @@ def view_session_with_slug(request: Request, customer_slug: str, session_id: str
         if url:
             data[key] = fetch_json(url)
 
-    # Audio url if found
+    # Audio url if found - serve via proxy endpoint under our own domain
     if latest_keys.get("audio"):
-        urls["audio"] = build_public_s3_url_from_key(latest_keys["audio"]) 
+        urls["audio"] = build_audio_proxy_url_from_key(latest_keys["audio"])
 
     # Extract call to action data from summary file
     if data.get("summary") and isinstance(data["summary"], dict):
@@ -1620,12 +1727,14 @@ def get_job(job_id: str):
             "files": {}
         }
         
-        # Add audio file info
-        if job.get("audio_s3_url"):
+        # Add audio file info (public URL via /audio/...; S3 remains private)
+        audio_key = job.get("audio_s3_key")
+        audio_url = build_audio_proxy_url_from_key(audio_key) if audio_key else None
+        if audio_url:
             system["files"]["audio"] = {
-                "url": job.get("audio_s3_url"),
-                "key": job.get("audio_s3_key"),
-                "filename": job.get("audio_s3_key", "").split("/")[-1] if job.get("audio_s3_key") else None
+                "url": audio_url,
+                "key": audio_key,
+                "filename": audio_key.split("/")[-1] if audio_key else None
             }
         
         # Add transcription file info
