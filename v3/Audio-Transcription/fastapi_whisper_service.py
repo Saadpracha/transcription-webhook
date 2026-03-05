@@ -1,4 +1,4 @@
-# import os
+import os
 import uuid
 import json
 import time
@@ -10,7 +10,6 @@ from typing import Optional, Dict, Any
 import sys
 import subprocess
 import shutil
-import os
 from collections import deque
 try:
     import ai_summary  # type: ignore
@@ -1230,10 +1229,34 @@ def process_job(job_id: str, payload: dict):
         except Exception:
             pass
 
+        # If audio is missing/blank, still return a successful result and notify Make.com.
+        # This is expected for "No Answer" dispositions where GHL has no recording.
+        audio_url = payload.get("audio")
+        if audio_url is None or (isinstance(audio_url, str) and audio_url.strip() == ""):
+            jobs[job_id]["status"] = "done_no_audio"
+            jobs[job_id]["finished_at"] = time.time()
+            jobs[job_id]["audio_length"] = "00:00"
+            jobs[job_id]["audio_duration_seconds"] = 0
+            jobs[job_id]["no_audio"] = True
+
+            # Send output to Make webhook URL from input payload (customData.make_url_out)
+            try:
+                out_url = (payload.get("make_url_out") or "").strip()
+                if out_url:
+                    logger.info("No audio provided; sending webhook to URL: %s", out_url)
+                    send_make_webhook(jobs[job_id], contact_id, call_id, out_url, original_payload=payload, job_id=job_id)
+                else:
+                    logger.info("No make_url_out in payload; skipping output webhook (no audio)")
+            except Exception as make_ex:
+                logger.warning("Unexpected error while posting to Make.com webhook (no audio): %s", make_ex)
+
+            logger.info("Job %s completed with no audio (expected for no-answer)", job_id)
+            return
+
         # If transcription is disabled: download audio, save to S3, send webhook with audio link + duration
         if not transcribe:
             audio_url = payload.get("audio")
-            if not audio_url:
+            if audio_url is None or (isinstance(audio_url, str) and audio_url.strip() == ""):
                 raise ValueError("payload must include 'audio' url to save and return audio link (transcribe=false)")
 
             jobs[job_id]["status"] = "downloading"
@@ -1296,7 +1319,7 @@ def process_job(job_id: str, payload: dict):
 
         # From here on, transcription is enabled
         audio_url = payload.get("audio")
-        if not audio_url:
+        if audio_url is None or (isinstance(audio_url, str) and audio_url.strip() == ""):
             raise ValueError("payload must include 'audio' url when transcribe=true")
 
         jobs[job_id]["status"] = "downloading"
@@ -1539,7 +1562,12 @@ def process_job(job_id: str, payload: dict):
 
 @app.post("/webhook3")
 def webhook2_listener(payload: dict):
-    """Receives webhook (from Make or direct CRM). Payload must contain `audio` url.
+    """Receives webhook (from Make or direct CRM).
+    
+    Notes:
+    - `audio` may be blank/missing for "No Answer" dispositions (no recording in GHL). In that case
+      the job completes as `done_no_audio` and still posts to `make_url_out` so Make/Google Sheets
+      can record the call metadata.
     
     - Removed variables: date_time, company_name (top-level)
     - Variable names from customData: token, slug, googlesheet, audio
