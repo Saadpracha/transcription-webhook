@@ -176,9 +176,9 @@ def start_queue_processor():
 _transcriber: Optional[AudioTranscriberWithDiarization] = None  # type: ignore
 
 app = FastAPI(title="WhisperX + Diarization Transcription Service V2")
-@app.post("/v3/")
-def webhook_v2(payload: dict):
-    return webhook2_listener(payload)
+@app.post("/v4/")
+def webhook_v4(payload: dict):
+    return webhook4_listener(payload)
 
 
 @app.get("/")
@@ -1560,8 +1560,8 @@ def process_job(job_id: str, payload: dict):
             logger.warning("Failed to clean up local files for job %s: %s", job_id, cleanup_ex)
 
 
-@app.post("/webhook3")
-def webhook2_listener(payload: dict):
+@app.post("/webhook4")
+def webhook4_listener(payload: dict):
     """Receives webhook (from Make or direct CRM).
     
     Notes:
