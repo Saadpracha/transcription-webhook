@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Session {{ session_id }}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Session</h1>
+            <div class="sid">ID: {{ session_id }}</div>
+        </header>
+
+        <section>
+            <h2>Summary</h2>
+            {% if summary %}
+                {% set sum_text = summary.get('summary') or summary.get('summary_text') or summary %}
+                {% if sum_text is string %}
+                    <p>{{ sum_text }}</p>
+                {% else %}
+                    <pre class="json-block">{{ sum_text | tojson(indent=2) }}</pre>
+                {% endif %}
+                {% if summary.get('key_points') %}
+                    <ul>
+                        {% for pt in summary.get('key_points') %}
+                            <li>{{ pt }}</li>
+                        {% endfor %}
+                    </ul>
+                {% endif %}
+                
+                {# Deliberately do not render action items here. They are displayed in the Call To Action section. #}
+            {% else %}
+                <p class="muted">Not available</p>
+            {% endif %}
+        </section>
+
+        <section>
+            <h2>Call To Action</h2>
+            {% if call_to_action %}
+                {% set items = call_to_action.get('call_to_action') or call_to_action.get('call_to_action_items') or [] %}
+                {% if items %}
+                    <ul class="checklist">
+                        {% for item in items %}
+                            <li>
+                                <input type="checkbox" disabled />
+                                <span class="item">{{ item.get('item') or item }}</span>
+                                {% if item.get('owner') %}<span class="meta">Owner: {{ item.get('owner') }}</span>{% endif %}
+                                {% if item.get('due') %}<span class="meta">Due: {{ item.get('due') }}</span>{% endif %}
+                            </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p class="muted">No action items found</p>
+                {% endif %}
+            {% else %}
+                <p class="muted">Not available</p>
+            {% endif %}
+        </section>
+
+        <!-- Call Quality Feedback Box -->
+        <section class="feedback-box">
+            <h2>Call Quality Feedback</h2>
+            {% set feedback = (summary.get('call_quality_feedback') if summary else None) %}
+            <div class="feedback-content">
+                <div class="feedback-section">
+                    <h3>Strengths</h3>
+                    {% if feedback and feedback.get('strengths') %}
+                        <ul>
+                            {% for s in feedback.get('strengths') %}
+                                <li>{{ s }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="muted">Feedback on call strengths will be displayed here</p>
+                    {% endif %}
+                </div>
+                <div class="feedback-section">
+                    <h3>Improvements</h3>
+                    {% if feedback and feedback.get('improvements') %}
+                        <ul>
+                            {% for s in feedback.get('improvements') %}
+                                <li>{{ s }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="muted">Feedback on areas for improvement will be displayed here</p>
+                    {% endif %}
+                </div>
+            </div>
+        </section>
+
+        
+
+        <section>
+            <h2>Transcript</h2>
+            {% if transcript %}
+                {% set segs = transcript.get('segments') or [] %}
+                {% if segs %}
+                    <div class="transcript">
+                        {% for seg in segs %}
+                            <div class="seg">
+                                <span class="time">[{{ '%.2f' % (seg.get('start') or 0) }}]</span>
+                                <span class="speaker">{{ seg.get('speaker') or 'SPEAKER' }}</span>:
+                                <span class="text">{{ seg.get('text') }}</span>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <pre class="json-block">{{ transcript | tojson(indent=2) }}</pre>
+                {% endif %}
+            {% else %}
+                <p class="muted">Not available</p>
+            {% endif %}
+        </section>
+
+        <section>
+            <h2>Prompt</h2>
+            {% if prompt %}
+                {% set caller = (prompt.get('caller_information') or {}) %}
+                {% set contact = (prompt.get('contact_information') or {}) %}
+                {% set created_at = prompt.get('created_at') %}
+                {% set prompt_text = prompt.get('prompt') %}
+
+                <div class="prompt-block">
+                    {% if caller.get('full_name') %}
+                        <div><strong>Caller</strong>: {{ caller.get('full_name') }}</div>
+                    {% elif caller.get('first_name') or caller.get('last_name') %}
+                        <div><strong>Caller</strong>: {{ caller.get('first_name') or '' }} {{ caller.get('last_name') or '' }}</div>
+                    {% endif %}
+                    {% if contact %}
+                        <div><strong>Contact</strong>:
+                            {% if contact.get('full_name') %}
+                                {{ contact.get('full_name') }}
+                            {% else %}
+                                {{ contact.get('first_name') or '' }} {{ contact.get('last_name') or '' }}
+                            {% endif %}
+                        </div>
+                    {% endif %}
+                    {% if prompt.get('created_at_utc') %}
+                        <div class="muted"><strong>Created</strong>: {{ prompt.get('created_at_utc') }}</div>
+                    {% elif created_at %}
+                        <div class="muted"><strong>Created</strong>: {{ created_at }}</div>
+                    {% endif %}
+                </div>
+
+                {% if prompt_text %}
+                    <div class="prompt-text json-block" style="white-space:pre-wrap">{{ prompt_text | replace('\n', '\n') }}</div>
+                {% else %}
+                    <pre class="json-block">{{ prompt | tojson(indent=2) }}</pre>
+                {% endif %}
+            {% else %}
+                <p class="muted">Not available</p>
+            {% endif %}
+        </section>
+
+        <section>
+            <h2>Files</h2>
+            <ul>
+                <li>📋 Summary: {% if urls.summary %}<a href="{{ urls.summary }}" target="_blank">{{ urls.summary }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+                <li>🤖 Prompt: {% if urls.prompt %}<a href="{{ urls.prompt }}" target="_blank">{{ urls.prompt }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+                <li>📝 Transcript: {% if urls.transcript %}<a href="{{ urls.transcript }}" target="_blank">{{ urls.transcript }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+                <li>🎵 Audio: {% if urls.audio %}<a href="{{ urls.audio }}" target="_blank">{{ urls.audio }}</a>{% else %}<span class="muted">Not available</span>{% endif %}</li>
+            </ul>
+        </section>
+
+        <footer>
+            <p class="muted">Generated by Audio Transcription Service</p>
+        </footer>
+    </div>
+</body>
+</html>
+
